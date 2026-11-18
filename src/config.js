@@ -14,6 +14,13 @@ export function loadConfig(env = process.env) {
       transcribeModel: env.GROQ_TRANSCRIBE_MODEL || 'whisper-large-v3-turbo',
     },
 
+    // WhatsApp > Settings > Agents > your agent > Chat info > API key
+    agentPlatform: {
+      token: env.WHATSAPP_AGENT_TOKEN || '',
+      backlogMinutes: num(env.WHATSAPP_AGENT_BACKLOG_MINUTES, 10),
+    },
+
+    // Optional: a WhatsApp Business number through a Meta developer app (webhook)
     meta: {
       token: env.META_ACCESS_TOKEN || '',
       appSecret: env.META_APP_SECRET || '',

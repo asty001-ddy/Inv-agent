@@ -5,13 +5,17 @@ import { loadConfig } from './config.js';
 import { Groq } from './groq.js';
 import { WhatsApp, verifySignature, extractMessages } from './whatsapp.js';
 import { InvoiceAgent } from './agent.js';
+import { WhatsAppAgentPlatform, startPoller } from './wa-agent.js';
 
-export function createApp({ cfg = loadConfig(), fetchImpl = globalThis.fetch } = {}) {
+export function createApp({ cfg = loadConfig(), fetchImpl = globalThis.fetch, startPolling = false } = {}) {
   const groq = new Groq({ ...cfg.groq, fetchImpl });
-  const wa = new WhatsApp({ ...cfg.meta, fetchImpl });
+  const wa = new WhatsApp({ ...cfg.meta, fetchImpl }); // business number (Meta Cloud API, webhook)
+  const waAgent = new WhatsAppAgentPlatform({ token: cfg.agentPlatform.token, fetchImpl }); // Settings > Agents (API key)
   const agent = new InvoiceAgent({ cfg, groq, fetchImpl });
+  const pollStatus = { mode: cfg.agentPlatform.token ? 'starting' : 'off' };
 
   const app = express();
+  app.locals.stop = () => poller?.stop();
   app.use(express.json({ limit: '1mb', verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
   // Meta retries webhooks, so remember recent message ids and skip repeats.
@@ -34,42 +38,51 @@ export function createApp({ cfg = loadConfig(), fetchImpl = globalThis.fetch } =
   const allowed = (from) =>
     !cfg.allowedNumbers.length || cfg.allowedNumbers.includes('*') || cfg.allowedNumbers.includes(from);
 
-  async function deliver(to, replies) {
+  async function deliver(channel, to, replies) {
     for (const r of replies) {
-      if (r.type === 'text') await wa.sendText(to, r.body);
-      else if (r.type === 'buttons') await wa.sendButtons(to, r.body, r.buttons);
-      else if (r.type === 'document') await wa.sendDocument(to, r.buffer, r.filename, r.caption);
+      if (r.type === 'text') await channel.sendText(to, r.body);
+      else if (r.type === 'preview') await channel.sendPreview(to, r.body);
+      else if (r.type === 'document') await channel.sendDocument(to, r.buffer, r.filename, r.caption);
     }
   }
 
-  async function processMessage(m) {
-    if (!allowed(m.from)) {
-      console.log(`Ignored message from ${m.from} (not in ALLOWED_NUMBERS)`);
-      return;
-    }
-    wa.markReadTyping(m.id);
+  // Same conversation logic for both WhatsApp channels.
+  async function processMessage(m, channel) {
+    if (m.type === 'reaction') return; // a 👍 on a message needs no reply
+    channel.markReadTyping(m.id);
     let text = m.text;
     if (m.type === 'audio' && m.mediaId) {
       try {
-        const { buffer, mime } = await wa.downloadMedia(m.mediaId);
+        const { buffer, mime } = await channel.downloadMedia(m.mediaId);
         text = await groq.transcribe(buffer, 'voice.ogg', mime);
         console.log(`Voice note from ${m.from}: ${text}`);
       } catch (err) {
         console.error('Voice note failed:', err.message);
-        return wa.sendText(m.from, 'Sorry, I could not hear that voice note. Could you type it instead?');
+        return channel.sendText(m.from, 'Sorry, I could not hear that voice note. Could you type it instead?');
       }
     }
-    if (!text) return wa.sendText(m.from, 'Please send the invoice details as a text message or a voice note.');
+    if (!text) return channel.sendText(m.from, 'Please send the invoice details as a text message or a voice note.');
     try {
-      await deliver(m.from, await agent.handle(m.from, text, { buttonId: m.buttonId }));
+      await deliver(channel, m.from, await agent.handle(m.from, text, { buttonId: m.buttonId }));
     } catch (err) {
       console.error('Reply failed:', err.message);
-      await wa.sendText(m.from, 'Something went wrong while making that invoice. Please try again.').catch(() => {});
+      await channel.sendText(m.from, 'Something went wrong while making that invoice. Please try again.').catch(() => {});
     }
   }
 
+  // ---------- WhatsApp Agents (API key): poll for messages ----------
+  let poller = null;
+  if (startPolling && cfg.agentPlatform.token) {
+    poller = startPoller({
+      client: waAgent,
+      backlogMinutes: cfg.agentPlatform.backlogMinutes,
+      status: pollStatus,
+      onMessage: (m) => { if (firstTime(m.id)) enqueue(m.from, () => processMessage(m, waAgent)); },
+    });
+  }
+
   // ---------- Health check (Render uses this) ----------
-  app.get('/healthz', (_req, res) => res.json({ ok: true }));
+  app.get('/healthz', (_req, res) => res.json({ ok: true, whatsappAgent: pollStatus }));
 
   // ---------- WhatsApp webhook ----------
   app.get('/webhook', (req, res) => {
@@ -82,7 +95,11 @@ export function createApp({ cfg = loadConfig(), fetchImpl = globalThis.fetch } =
     if (!verifySignature(req.rawBody, req.get('x-hub-signature-256'), cfg.meta.appSecret)) return res.sendStatus(401);
     res.sendStatus(200); // answer Meta straight away; the work happens after
     for (const m of extractMessages(req.body)) {
-      if (firstTime(m.id)) enqueue(m.from, () => processMessage(m));
+      if (!allowed(m.from)) {
+        console.log(`Ignored message from ${m.from} (not in ALLOWED_NUMBERS)`);
+        continue;
+      }
+      if (firstTime(m.id)) enqueue(m.from, () => processMessage(m, wa));
     }
   });
 
@@ -128,13 +145,22 @@ export function createApp({ cfg = loadConfig(), fetchImpl = globalThis.fetch } =
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const cfg = loadConfig();
-  const missing = [
-    ['GROQ_API_KEY', cfg.groq.apiKey],
-    ['META_ACCESS_TOKEN', cfg.meta.token],
-    ['META_PHONE_NUMBER_ID', cfg.meta.phoneNumberId],
-    ['META_VERIFY_TOKEN', cfg.meta.verifyToken],
-  ].filter(([, v]) => !v).map(([k]) => k);
-  if (missing.length) console.warn(`Missing settings: ${missing.join(', ')} — WhatsApp replies will not work until they are set.`);
-  if (!cfg.meta.appSecret) console.warn('META_APP_SECRET is not set — webhook signatures are not being checked.');
-  createApp({ cfg }).listen(cfg.port, () => console.log(`Invoice agent running on port ${cfg.port}`));
+  if (!cfg.groq.apiKey) console.warn('GROQ_API_KEY is not set — the agent cannot read messages until it is.');
+  const metaReady = cfg.meta.token && cfg.meta.phoneNumberId;
+  if (!cfg.agentPlatform.token && !metaReady) {
+    console.warn('No WhatsApp connection set. Add WHATSAPP_AGENT_TOKEN (WhatsApp > Settings > Agents > API key).');
+  }
+  if (cfg.agentPlatform.token) console.log('WhatsApp Agents: polling for messages.');
+  if (metaReady) console.log('WhatsApp business number: webhook at /webhook.');
+  if (metaReady && !cfg.meta.appSecret) console.warn('META_APP_SECRET is not set — webhook signatures are not being checked.');
+
+  createApp({ cfg, startPolling: true }).listen(cfg.port, () => console.log(`Invoice agent running on port ${cfg.port}`));
+
+  // Render's free plan sleeps after 15 minutes with no visits, which would stop the polling.
+  // Visiting our own public address every 10 minutes keeps it awake.
+  const selfUrl = process.env.RENDER_EXTERNAL_URL;
+  if (selfUrl && cfg.agentPlatform.token && process.env.KEEP_AWAKE !== 'off') {
+    setInterval(() => fetch(`${selfUrl}/healthz`).catch(() => {}), 10 * 60 * 1000).unref();
+    console.log(`Keep-awake on: ${selfUrl}/healthz every 10 minutes.`);
+  }
 }

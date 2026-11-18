@@ -18,7 +18,7 @@ export function extractMessages(body) {
       const value = change.value || {};
       const names = Object.fromEntries((value.contacts || []).map((c) => [c.wa_id, c.profile?.name || '']));
       for (const m of value.messages || []) {
-        const msg = { id: m.id, from: m.from, name: names[m.from] || '', type: m.type, text: '' };
+        const msg = { id: m.id, from: m.from, name: names[m.from] || '', type: m.type, text: '', timestamp: Number(m.timestamp) || 0 };
         if (m.type === 'text') msg.text = m.text?.body || '';
         else if (m.type === 'interactive') {
           const r = m.interactive?.button_reply || m.interactive?.list_reply || {};
@@ -77,6 +77,14 @@ export class WhatsApp {
         action: { buttons: buttons.slice(0, 3).map((b) => ({ type: 'reply', reply: { id: b.id, title: b.title.slice(0, 20) } })) },
       },
     });
+  }
+
+  // Invoice preview with Generate / Cancel buttons
+  sendPreview(to, summary) {
+    return this.sendButtons(to, `${summary}\n\nTap *Generate PDF*, or tell me what to change.`, [
+      { id: 'confirm', title: 'Generate PDF' },
+      { id: 'cancel', title: 'Cancel' },
+    ]);
   }
 
   async uploadMedia(buffer, filename, mime) {

@@ -115,11 +115,8 @@ export class InvoiceAgent {
     if (out.intent === 'confirm' && missing.length === 0) return this.generate(user, s);
 
     if (missing.length === 0) {
-      return [{
-        type: 'buttons',
-        body: `${summaryText(s.draft, this.cfg.defaults)}\n\nTap *Generate PDF*, or tell me what to change.`,
-        buttons: [{ id: 'confirm', title: 'Generate PDF' }, { id: 'cancel', title: 'Cancel' }],
-      }];
+      // Each WhatsApp channel shows this its own way (buttons, or "reply yes")
+      return [{ type: 'preview', body: summaryText(s.draft, this.cfg.defaults) }];
     }
     const fallback = s.draft.client.name || s.draft.items.length
       ? `Got it. I still need: ${missing.join(', ')}.`
