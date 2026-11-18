@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Invoice Agent</title>
+<style>
+  :root { --accent: #0F4C5C; --ink: #1F2933; --muted: #6B7280; --line: #E5E7EB; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Iowan Old Style", Georgia, serif; color: var(--ink); background: #F5F3EE; }
+  main { max-width: 620px; margin: 0 auto; padding: 48px 20px; }
+  h1 { font-size: 30px; margin: 0 0 6px; color: var(--accent); }
+  p.lead { margin: 0 0 28px; color: var(--muted); font-family: system-ui, sans-serif; font-size: 15px; }
+  label { display: block; font: 600 13px system-ui, sans-serif; margin: 18px 0 6px; }
+  input, textarea { width: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; font: 15px system-ui, sans-serif; background: #fff; }
+  textarea { min-height: 140px; resize: vertical; }
+  button { margin-top: 20px; width: 100%; padding: 14px; border: 0; border-radius: 10px; background: var(--accent); color: #fff; font: 600 15px system-ui, sans-serif; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: wait; }
+  #msg { margin-top: 18px; font: 14px system-ui, sans-serif; white-space: pre-wrap; }
+  .err { color: #B42318; }
+  .ok { color: #067647; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Invoice Agent</h1>
+  <p class="lead">Describe the invoice in plain words. You get a PDF back. On WhatsApp, just message the business number instead.</p>
+
+  <label for="key">Access key</label>
+  <input id="key" type="password" autocomplete="current-password" placeholder="INVOICE_API_KEY">
+
+  <label for="text">Invoice details</label>
+  <textarea id="text" placeholder="Invoice Al Shukr Dairy, 50 litres milk at 220, delivery 1500, 17% tax, due in 10 days"></textarea>
+
+  <button id="go">Create PDF</button>
+  <div id="msg"></div>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  try { $('key').value = localStorage.getItem('invoiceKey') || ''; } catch {}
+  $('go').onclick = async () => {
+    const key = $('key').value.trim(), text = $('text').value.trim();
+    if (!key || !text) { show('Enter the access key and the invoice details.', 'err'); return; }
+    try { localStorage.setItem('invoiceKey', key); } catch {}
+    $('go').disabled = true; show('Working…');
+    try {
+      const res = await fetch('/api/invoice', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': key }, body: JSON.stringify({ text }) });
+      if (res.ok) {
+        const blob = await res.blob();
+        const name = (res.headers.get('Content-Disposition') || '').match(/filename="(.+)"/)?.[1] || 'invoice.pdf';
+        const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: name });
+        a.click();
+        show(`Done: ${name}`, 'ok');
+      } else {
+        const data = await res.json().catch(() => ({}));
+        show(data.question || (data.missing ? 'Still missing: ' + data.missing.join(', ') : data.error || 'Something went wrong.'), 'err');
+      }
+    } catch { show('Could not reach the server. If it was asleep, try again in a minute.', 'err'); }
+    $('go').disabled = false;
+  };
+  function show(t, cls = '') { $('msg').textContent = t; $('msg').className = cls; }
+</script>
+</body>
+</html>

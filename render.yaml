@@ -1,0 +1,49 @@
+# Render Blueprint: New > Blueprint > pick this repo. Every push to main redeploys automatically.
+services:
+  - type: web
+    name: invoice-agent
+    runtime: node
+    region: frankfurt # closest Render region to Pakistan
+    plan: free # sleeps after 15 min idle; first reply after a sleep takes ~1 min. Use "starter" to keep it always on.
+    branch: main
+    autoDeploy: true
+    buildCommand: npm ci --omit=dev
+    startCommand: node src/server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: TIMEZONE
+        value: Asia/Karachi
+      # ---- Secrets: Render asks for these when you create the Blueprint ----
+      - key: GROQ_API_KEY
+        sync: false
+      - key: META_ACCESS_TOKEN
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: META_PHONE_NUMBER_ID
+        sync: false
+      - key: META_VERIFY_TOKEN
+        generateValue: true # Render makes a random one; copy it into Meta's webhook settings
+      - key: INVOICE_API_KEY
+        generateValue: true # access key for the web form at your Render URL
+      - key: ALLOWED_NUMBERS
+        sync: false
+      # ---- Your business details (printed on every invoice) ----
+      - key: BUSINESS_NAME
+        sync: false
+      - key: BUSINESS_ADDRESS
+        sync: false
+      - key: BUSINESS_PHONE
+        sync: false
+      - key: BUSINESS_EMAIL
+        sync: false
+      - key: BUSINESS_TAX_ID
+        sync: false
+      - key: BANK_DETAILS
+        sync: false
+      - key: CURRENCY
+        value: PKR
+      - key: TAX_RATE
+        value: "0"
